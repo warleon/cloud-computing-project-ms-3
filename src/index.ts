@@ -75,17 +75,17 @@ app.post("/transactions", async (req: Request<{}, {}, TransferRequestBody>, res:
   (async () => {
     // Asegurar cuentas mock
     const src = ensureAccountExists(sourceAccountId);
-    ensureAccountExists(destinationAccountId, src.currency);
+    ensureAccountExists(destinationAccountId, src.balance.currency);
 
     // Compliance mock
     const compliance = validateTransaction({
       sourceAccountId,
       destinationAccountId,
-      amount: { value: amount.value, currency: src.currency },
+      amount: { value: amount.value, currency: src.balance.currency },
     });
 
     // Actualizar la moneda en el registro una vez que la conocemos por la cuenta de origen
-    record.amount.currency = src.currency;
+    record.amount.currency = src.balance.currency;
     transactionIdToRecord.set(id, record);
 
     if (compliance.decision === "reject") {
@@ -102,14 +102,14 @@ app.post("/transactions", async (req: Request<{}, {}, TransferRequestBody>, res:
       transactionIdToRecord.set(id, record);
 
       // Paso 2.1: Debitar cuenta de origen
-      const debit = debitAccount(sourceAccountId, { value: amount.value, currency: src.currency });
+      const debit = debitAccount(sourceAccountId, { value: amount.value, currency: src.balance.currency });
       if (!debit.ok) {
         throw new Error(`Debit failed: ${debit.reason}`);
       }
       debitSucceeded = true;
 
       // Paso 2.2: Acreditar cuenta de destino
-      const credit = creditAccount(destinationAccountId, { value: amount.value, currency: src.currency });
+      const credit = creditAccount(destinationAccountId, { value: amount.value, currency: src.balance.currency });
       if (!credit.ok) {
         throw new Error(`Credit failed: ${credit.reason}`);
       }
@@ -125,7 +125,7 @@ app.post("/transactions", async (req: Request<{}, {}, TransferRequestBody>, res:
       console.error(`Transaction ${id} failed. Reason: ${(error as Error).message}. Initiating compensation.`);
 
       if (debitSucceeded) {
-        const reversal = creditAccount(sourceAccountId, { value: amount.value, currency: src.currency });
+        const reversal = creditAccount(sourceAccountId, { value: amount.value, currency: src.balance.currency });
         if (!reversal.ok) {
           console.error(`CRITICAL: Failed to revert debit for transaction ${id}. Manual intervention required.`);
         } else {
