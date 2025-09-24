@@ -1,0 +1,235 @@
+openapi: 3.0.0
+info:
+  title: MS3 - Transactions Service API
+  version: 1.0.0
+  description: API for managing financial transactions in the banking platform.
+
+paths:
+  /transactions:
+    post:
+      summary: Creates a new transaction (transfer).
+      description: Initiates a new transfer of funds between two accounts, validating with MS2 and MS4.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transactionType:
+                  type: string
+                  enum: [transfer]
+                  example: transfer
+                sourceAccountId:
+                  type: string
+                  example: "acc-12345"
+                destinationAccountId:
+                  type: string
+                  example: "acc-67890"
+                amount:
+                  type: object
+                  properties:
+                    value:
+                      type: number
+                      format: float
+                      example: 1000.00
+                    currency:
+                      type: string
+                      example: "USD"
+                description:
+                  type: string
+                  example: "Payment for groceries"
+              required:
+                - transactionType
+                - sourceAccountId
+                - destinationAccountId
+                - amount
+      responses:
+        '201':
+          description: Transaction submitted successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactionId:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+                  status:
+                    type: string
+                    example: pending
+                  message:
+                    type: string
+                    example: "Transaction submitted for processing."
+        '400':
+          description: Invalid request or malformed data.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+        '409':
+          description: Conflict, for example, due to insufficient funds.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+        '422':
+          description: Unprocessable entity, for example, due to compliance rejection.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                  message:
+                    type: string
+
+  /transactions/{transactionId}:
+    get:
+      summary: Retrieves a transaction's details.
+      description: Returns the status and details of a specific transaction by its ID.
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transaction details found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactionId:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+                  status:
+                    type: string
+                    example: completed
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2025-09-24T14:30:00Z"
+                  sourceAccountId:
+                    type: string
+                    example: "acc-12345"
+                  destinationAccountId:
+                    type: string
+                    example: "acc-67890"
+                  amount:
+                    type: object
+                    properties:
+                      value:
+                        type: number
+                        format: float
+                        example: 1000.00
+                      currency:
+                        type: string
+                        example: "USD"
+                  description:
+                    type: string
+                    example: "Payment for groceries"
+        '404':
+          description: Transaction not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    example: TRANSACTION_NOT_FOUND
+                  message:
+                    type: string
+                    example: "Transaction with the provided ID was not found."
+
+  /accounts/{accountId}/transactions:
+    get:
+      summary: Retrieves a list of transactions for an account.
+      description: Returns a history of transactions for a specific account, with optional pagination.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of transactions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId:
+                    type: string
+                    example: "acc-12345"
+                  transactions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        transactionId:
+                          type: string
+                          format: uuid
+                          example: "550e8400-e29b-41d4-a716-446655440000"
+                        timestamp:
+                          type: string
+                          format: date-time
+                          example: "2025-09-24T14:30:00Z"
+                        type:
+                          type: string
+                          enum: [debit, credit]
+                        amount:
+                          type: object
+                          properties:
+                            value:
+                              type: number
+                              format: float
+                              example: 1000.00
+                            currency:
+                              type: string
+                              example: "USD"
+                        description:
+                          type: string
+                          example: "Transfer to account X"
+        '404':
+          description: Account not found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  code:
+                    type: string
+                    example: ACCOUNT_NOT_FOUND
+                  message:
+                    type: string
+                    example: "Account with the provided ID was not found."

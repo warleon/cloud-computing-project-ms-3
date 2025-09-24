@@ -1,0 +1,254 @@
+openapi: 3.0.0
+info:
+  title: MS3 - Transactions Service API
+  version: 1.0.0
+  description: API for managing financial transactions in the banking platform.
+
+servers:
+  - url: https://api.example.com/ms3
+    description: Production
+  - url: http://localhost:3003
+    description: Local
+
+security:
+  - bearerAuth: []
+
+paths:
+  /transactions:
+    post:
+      summary: Creates a new transaction (transfer).
+      description: Initiates a new transfer of funds between two accounts, validating with MS2 and MS4.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          description: Prevents duplicate transaction creation on retries.
+          schema:
+            type: string
+            maxLength: 64
+        - in: header
+          name: X-Request-Id
+          required: false
+          description: Correlation ID for tracing.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transactionType:
+                  type: string
+                  enum: [transfer]
+                  example: transfer
+                sourceAccountId:
+                  type: string
+                  example: "acc-12345"
+                destinationAccountId:
+                  type: string
+                  example: "acc-67890"
+                amount:
+                  $ref: '#/components/schemas/Money'
+                description:
+                  type: string
+                  maxLength: 140
+                  example: "Payment for groceries"
+              required:
+                - transactionType
+                - sourceAccountId
+                - destinationAccountId
+                - amount
+      responses:
+        '201':
+          description: Transaction submitted successfully.
+          headers:
+            Location:
+              description: URL to poll for transaction status.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactionId:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+                  status:
+                    type: string
+                    enum: [pending, processing, completed, failed]
+                  message:
+                    type: string
+                    example: "Transaction submitted for processing."
+        '400':
+          description: Invalid request or malformed data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Conflict, for example, due to insufficient funds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Unprocessable entity, for example, due to compliance rejection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limit exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Downstream service unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /transactions/{transactionId}:
+    get:
+      summary: Retrieves a transaction's details.
+      description: Returns the status and details of a specific transaction by its ID.
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transaction details found.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transactionId:
+                    type: string
+                    format: uuid
+                    example: "550e8400-e29b-41d4-a716-446655440000"
+                  status:
+                    type: string
+                    enum: [pending, processing, completed, failed]
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2025-09-24T14:30:00Z"
+                  sourceAccountId:
+                    type: string
+                    example: "acc-12345"
+                  destinationAccountId:
+                    type: string
+                    example: "acc-67890"
+                  amount:
+                    $ref: '#/components/schemas/Money'
+                  description:
+                    type: string
+                    example: "Payment for groceries"
+        '404':
+          description: Transaction not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /accounts/{accountId}/transactions:
+    get:
+      summary: Retrieves a list of transactions for an account.
+      description: Returns a history of transactions for a specific account, with optional pagination.
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        '200':
+          description: List of transactions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId:
+                    type: string
+                    example: "acc-12345"
+                  transactions:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        transactionId:
+                          type: string
+                          format: uuid
+                          example: "550e8400-e29b-41d4-a716-446655440000"
+                        timestamp:
+                          type: string
+                          format: date-time
+                          example: "2025-09-24T14:30:00Z"
+                        type:
+                          type: string
+                          enum: [debit, credit]
+                        amount:
+                          $ref: '#/components/schemas/Money'
+                        description:
+                          type: string
+                          example: "Transfer to account X"
+        '404':
+          description: Account not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Money:
+      type: object
+      required: [value, currency]
+      properties:
+        value:
+          type: string
+          pattern: "^[0-9]+(\\.[0-9]{1,2})?$"
+          example: "1000.00"
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+          example: "USD"
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
