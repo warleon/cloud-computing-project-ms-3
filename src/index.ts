@@ -1,5 +1,6 @@
 // src/index.ts
 import express, { type Express, type Request, type Response } from "express";
+import { createId } from "@paralleldrive/cuid2";
 import {
   ensureAccountExists,
   debitAccount,
@@ -36,16 +37,12 @@ interface TransactionRecord {
 
 const transactionIdToRecord: Map<string, TransactionRecord> = new Map();
 
-function generateId(): string {
-  return Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
-
 app.get("/", (req: Request, res: Response) => {
   res.send("Hello from Express & TypeScript!");
 });
 
 // POST /transactions (simple MVP con mocks)
-app.post("/transactions", (req: Request<{}, {}, TransferRequestBody>, res: Response) => {
+app.post("/transactions", async (req: Request<{}, {}, TransferRequestBody>, res: Response) => {
   const body = req.body;
   if (!body || body.transactionType !== "transfer") {
     return res.status(400).json({ code: "INVALID_REQUEST", message: "transactionType must be 'transfer'" });
@@ -58,44 +55,90 @@ app.post("/transactions", (req: Request<{}, {}, TransferRequestBody>, res: Respo
     return res.status(400).json({ code: "SAME_ACCOUNT", message: "source and destination must differ" });
   }
 
-  // Asegurar cuentas mock
-  const src = ensureAccountExists(sourceAccountId);
-  const dst = ensureAccountExists(destinationAccountId, src.currency);
-
-  // Compliance mock
-  const compliance = validateTransaction({
-    sourceAccountId,
-    destinationAccountId,
-    amount: { value: amount.value, currency: src.currency },
-  });
-  if (compliance.decision === "reject") {
-    return res.status(422).json({ code: "COMPLIANCE_REJECTED", message: compliance.reasons.join(",") });
-  }
-
-  // Orquestación simple: débito y luego crédito; si crédito falla, revertir débito
-  const debit = debitAccount(sourceAccountId, { value: amount.value, currency: src.currency });
-  if (!debit.ok) {
-    return res.status(409).json({ code: debit.reason, message: "Debit failed" });
-  }
-  const credit = creditAccount(destinationAccountId, { value: amount.value, currency: src.currency });
-  if (!credit.ok) {
-    // revertir débito
-    creditAccount(sourceAccountId, { value: amount.value, currency: src.currency });
-    return res.status(503).json({ code: credit.reason, message: "Credit failed" });
-  }
-
-  const id = generateId();
+  // --- Inicio de la Saga ---
+  // 1. Crear registro de transacción en estado 'pending'
+  const id = createId();
   const record: TransactionRecord = {
     id,
-    status: "completed",
+    status: "pending",
     sourceAccountId,
     destinationAccountId,
-    amount: { value: amount.value, currency: src.currency },
+    amount: { value: amount.value, currency: "USD" }, // La moneda se ajustará después
     description: body.description,
     createdAt: new Date().toISOString(),
   };
   transactionIdToRecord.set(id, record);
-  res.status(201).json({ transactionId: id, status: record.status, message: "Transaction submitted for processing." });
+  res.status(202).json({ transactionId: id, status: record.status, message: "Transaction received and is being processed." });
+
+  // --- Inicio de la Saga (pasos asíncronos) ---
+  // Usamos una función autoejecutable para no bloquear la respuesta inicial.
+  (async () => {
+    // Asegurar cuentas mock
+    const src = ensureAccountExists(sourceAccountId);
+    ensureAccountExists(destinationAccountId, src.currency);
+
+    // Compliance mock
+    const compliance = validateTransaction({
+      sourceAccountId,
+      destinationAccountId,
+      amount: { value: amount.value, currency: src.currency },
+    });
+
+    // Actualizar la moneda en el registro una vez que la conocemos por la cuenta de origen
+    record.amount.currency = src.currency;
+    transactionIdToRecord.set(id, record);
+
+    if (compliance.decision === "reject") {
+      record.status = "failed";
+      transactionIdToRecord.set(id, record);
+      console.log(`Transaction ${id} failed compliance: ${compliance.reasons.join(",")}`);
+      return; // Termina la ejecución de la saga.
+    }
+
+    // 2. Orquestación de la transacción (débito, crédito) con compensación
+    let debitSucceeded = false;
+    try {
+      record.status = "processing";
+      transactionIdToRecord.set(id, record);
+
+      // Paso 2.1: Debitar cuenta de origen
+      const debit = debitAccount(sourceAccountId, { value: amount.value, currency: src.currency });
+      if (!debit.ok) {
+        throw new Error(`Debit failed: ${debit.reason}`);
+      }
+      debitSucceeded = true;
+
+      // Paso 2.2: Acreditar cuenta de destino
+      const credit = creditAccount(destinationAccountId, { value: amount.value, currency: src.currency });
+      if (!credit.ok) {
+        throw new Error(`Credit failed: ${credit.reason}`);
+      }
+
+      // 3. Finalizar saga con éxito
+      record.status = "completed";
+      transactionIdToRecord.set(id, record);
+      console.log(`Transaction ${id} completed successfully.`);
+    } catch (error) {
+      // 4. Lógica de compensación en caso de fallo
+      record.status = "failed";
+      transactionIdToRecord.set(id, record);
+      console.error(`Transaction ${id} failed. Reason: ${(error as Error).message}. Initiating compensation.`);
+
+      if (debitSucceeded) {
+        const reversal = creditAccount(sourceAccountId, { value: amount.value, currency: src.currency });
+        if (!reversal.ok) {
+          console.error(`CRITICAL: Failed to revert debit for transaction ${id}. Manual intervention required.`);
+        } else {
+          console.log(`Debit for transaction ${id} was successfully reverted.`);
+        }
+      }
+    }
+  })().catch(err => {
+    // Captura errores inesperados en la promesa de la saga
+    console.error(`Unhandled error in saga for transaction ${id}:`, err);
+    record.status = "failed";
+    transactionIdToRecord.set(id, record);
+  });
 });
 
 // GET /transactions/:transactionId
@@ -143,6 +186,10 @@ app.get("/accounts/:accountId/balance", (req: Request, res: Response) => {
   if (!bal) return res.status(404).json({ code: "ACCOUNT_NOT_FOUND", message: "Not found" });
   return res.json({ accountId, balance: bal });
 });
-app.listen(port, () => {
-  console.log(`Server is running on http://localhost:${port}`);
-});
+if (process.env.NODE_ENV !== "test") {
+  app.listen(port, () => {
+    console.log(`Server is running on http://localhost:${port}`);
+  });
+}
+
+export default app;
