@@ -1,11 +1,12 @@
 // src/index.ts
 import express, { type Express, type Request, type Response, type NextFunction } from "express";
 import { createId } from "@paralleldrive/cuid2";
-import { type Money } from "./mocks/ms2.js";
+import { type Money } from "./types.js";
+import { setupSwagger } from "./swagger.js";
 import dotenv from 'dotenv';
 dotenv.config();
 
-const app: Express = express();
+const app = express();
 const port = process.env.PORT || 3000;
 
 const MS2_URL = process.env.MS2_URL || "http://localhost:8000";
@@ -13,6 +14,8 @@ const MS2_SERVICE_KEY = process.env.MS2_SERVICE_KEY || "super-secret-key-for-ms3
 const MS4_URL = process.env.MS4_URL || "http://localhost:8002";
 
 app.use(express.json());
+
+setupSwagger(app);
 
 type TransactionStatus = "pending" | "processing" | "completed" | "failed";
 
@@ -148,7 +151,51 @@ app.get("/", (req: Request, res: Response) => {
   res.send("Hello from Express & TypeScript!");
 });
 
-// POST /transactions (simple MVP con mocks)
+/**
+ * @swagger
+ * /transactions:
+ *   post:
+ *     summary: Create a new transaction
+ *     description: Initiates a new money transfer. The microservice receives the request, creates a transaction record in `pending` state, and responds immediately with a `202 Accepted`. The transaction is then processed asynchronously following the saga pattern steps (compliance, debit, credit).
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               transactionType:
+ *                 type: string
+ *                 enum: [transfer]
+ *               sourceAccountId:
+ *                 type: string
+ *               destinationAccountId:
+ *                 type: string
+ *               amount:
+ *                 type: object
+ *                 properties:
+ *                   value:
+ *                     type: number
+ *                   currency:
+ *                     type: string
+ *               description:
+ *                 type: string
+ *                 nullable: true
+ *     responses:
+ *       202:
+ *         description: Transaction received and is being processed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 transactionId:
+ *                   type: string
+ *                 status:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ */
 app.post("/transactions", async (req: Request<{}, {}, TransferRequestBody>, res: Response) => {
   const body = req.body;
   if (!body || body.transactionType !== "transfer") {
@@ -257,7 +304,38 @@ app.post("/transactions", async (req: Request<{}, {}, TransferRequestBody>, res:
   });
 });
 
-// GET /transactions/:transactionId
+/**
+ * @swagger
+ * /transactions/{transactionId}:
+ *   get:
+ *     summary: Get transaction status
+ *     description: Retrieves the details and current status of a specific transaction by its ID.
+ *     parameters:
+ *       - in: path
+ *         name: transactionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: The ID of the transaction.
+ *     responses:
+ *       200:
+ *         description: Returns the full transaction record.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/TransactionRecord'
+ *       404:
+ *         description: If no transaction is found with the provided ID.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 code:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ */
 app.get("/transactions/:transactionId", (req: Request, res: Response) => {
   const { transactionId } = req.params as { transactionId: string };
   const rec = transactionIdToRecord.get(transactionId);
@@ -273,7 +351,48 @@ app.get("/transactions/:transactionId", (req: Request, res: Response) => {
   });
 });
 
-// GET /accounts/:accountId/transactions
+/**
+ * @swagger
+ * /accounts/{accountId}/transactions:
+ *   get:
+ *     summary: List transactions for an account
+ *     description: Gets a paginated list of transactions (both debits and credits) associated with a specific account.
+ *     parameters:
+ *       - in: path
+ *         name: accountId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: The ID of the account.
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *         description: Maximum number of transactions to return.
+ *       - in: query
+ *         name: offset # Corregido: La indentación de 'schema' debe estar alineada con 'name' e 'in'.
+ *         schema:
+ *           type: integer
+ *           default: 0
+ *         description: Number of transactions to skip for pagination.
+ *     responses:
+ *       200:
+ *         description: Returns a list of transactions.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 accountId:
+ *                   type: string
+ *                 transactions:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       $ref: '#/components/schemas/TransactionListItem'
+ */
 app.get("/accounts/:accountId/transactions", (req: Request, res: Response) => {
   const { accountId } = req.params as { accountId: string };
   const limit = Math.min(Math.max(Number(req.query.limit ?? 20), 1), 100);
@@ -292,6 +411,94 @@ app.get("/accounts/:accountId/transactions", (req: Request, res: Response) => {
   }));
   return res.json({ accountId, transactions: slice });
 });
+
+/**
+ * @swagger
+ * /accounts/{accountId}/balance:
+ *   get:
+ *     summary: Get account balance (Helper)
+ *     description: Debugging helper endpoint that returns the current balance of an account by calling the Accounts microservice (ms-2).
+ *     tags: [Helpers]
+ *     parameters:
+ *       - in: path
+ *         name: accountId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: The ID of the account.
+ *     responses:
+ *       200:
+ *         description: Returns the account balance.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Money'
+ *       404:
+ *         description: If the account is not found.
+ */
+app.get("/accounts/:accountId/balance", async (req: Request, res: Response, next: NextFunction) => {
+  const { accountId } = req.params;
+  try {
+    if (!accountId) {
+      // Aunque Express garantiza esto, es una buena práctica de tipado defensivo.
+      return res.status(400).json({ code: "INVALID_REQUEST", message: "accountId is required" });
+    }
+    const account = await getAccountDetails(accountId);
+    res.json(account.balance);
+  } catch (error) {
+    // Pasa el error al middleware de manejo de errores
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     Money:
+ *       type: object
+ *       properties:
+ *         value:
+ *           type: number
+ *         currency:
+ *           type: string
+ *     TransactionRecord:
+ *       type: object
+ *       properties:
+ *         transactionId:
+ *           type: string
+ *         status:
+ *           type: string
+ *           enum: [pending, processing, completed, failed]
+ *         timestamp:
+ *           type: string
+ *           format: date-time
+ *         sourceAccountId:
+ *           type: string
+ *         destinationAccountId:
+ *           type: string
+ *         amount:
+ *           $ref: '#/components/schemas/Money'
+ *         description:
+ *           type: string
+ *           nullable: true
+ *     TransactionListItem:
+ *       type: object
+ *       properties:
+ *         transactionId:
+ *           type: string
+ *         timestamp:
+ *           type: string
+ *           format: date-time
+ *         type:
+ *           type: string
+ *           enum: [debit, credit]
+ *         amount:
+ *           $ref: '#/components/schemas/Money'
+ *         description:
+ *           type: string
+ *           nullable: true
+ */
 
 if (process.env.NODE_ENV !== "test") {
   // Middleware de manejo de errores
