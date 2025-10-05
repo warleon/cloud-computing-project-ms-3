@@ -64,7 +64,8 @@ async function getAccountDetails(accountId: string): Promise<{ id: string; balan
   }
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch account details for ${accountId}. Status: ${response.status}`);
+    const errorBody = await response.text().catch(() => `Failed to fetch account details for ${accountId}.`);
+    throw new Error(`Failed to fetch account details for ${accountId}. Status: ${response.status}. Body: ${errorBody}`);
   }
 
   // Asumimos que la respuesta de ms-2 tiene esta estructura
@@ -104,7 +105,7 @@ async function executeTransfer(params: {
     // Intenta parsear el error de FastAPI para dar un mensaje más claro.
     const errorBody = await response.json().catch(() => ({ detail: "Unknown error from ms-2" }));
     throw new Error(
-      `Transfer failed with status ${response.status}: ${errorBody.detail || "No details provided"}`
+      `Transfer failed with status ${response.status}: ${JSON.stringify(errorBody)}`
     );
   }
 
@@ -135,7 +136,7 @@ async function checkCompliance(params: ComplianceRequestBody): Promise<Complianc
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({ detail: "Unknown error from ms-4" }));
     throw new Error(
-      `Compliance check failed with status ${response.status}: ${errorBody.detail || "No details provided"}`
+      `Compliance check failed with status ${response.status}: ${JSON.stringify(errorBody)}`
     );
   }
 
