@@ -155,8 +155,8 @@ app.get("/", (req: Request, res: Response) => {
  * @swagger
  * /transactions:
  *   post:
- *     summary: Create a new transaction
- *     description: Initiates a new money transfer. The microservice receives the request, creates a transaction record in `pending` state, and responds immediately with a `202 Accepted`. The transaction is then processed asynchronously following the saga pattern steps (compliance, debit, credit).
+ *     summary: Create a new asynchronous transaction
+ *     description: Initiates a new money transfer. The microservice creates a transaction record in `pending` state and responds immediately with a `202 Accepted`. The transaction is then processed asynchronously: 1. Account validation. 2. Compliance check. 3. Atomic transfer. The final status will be `completed` or `failed`.
  *     requestBody:
  *       required: true
  *       content:
@@ -322,8 +322,8 @@ app.post("/transactions", async (req: Request<{}, {}, TransferRequestBody>, res:
  *         description: Returns the full transaction record.
  *         content:
  *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/TransactionRecord'
+ *             schema: # The response schema maps the internal TransactionRecord
+ *               $ref: '#/components/schemas/TransactionResponse'
  *       404:
  *         description: If no transaction is found with the provided ID.
  *         content:
@@ -464,6 +464,27 @@ app.get("/accounts/:accountId/balance", async (req: Request, res: Response, next
  *           type: string
  *     TransactionRecord:
  *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *         status:
+ *           type: string
+ *           enum: [pending, processing, completed, failed]
+ *         createdAt:
+ *           type: string
+ *           format: date-time
+ *         sourceAccountId:
+ *           type: string
+ *         destinationAccountId:
+ *           type: string
+ *         amount:
+ *           $ref: '#/components/schemas/Money'
+ *         description:
+ *           type: string
+ *           nullable: true
+ *     TransactionResponse:
+ *       type: object
+ *       description: "The public representation of a transaction record."
  *       properties:
  *         transactionId:
  *           type: string
